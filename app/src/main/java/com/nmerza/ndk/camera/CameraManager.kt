@@ -25,6 +25,7 @@ import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.nmerza.ndk.utils.FPSCounter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.text.SimpleDateFormat
@@ -37,9 +38,10 @@ class CameraManager(
     private val onGrayscaleBitmap: (Bitmap) -> Unit
 ) {
 
-    companion object {
-        var yuvLayout: YuvLayout? = null
-    }
+    private val renderFpsCounter = FPSCounter("Render")
+
+    private  var yuvLayout: YuvLayout? = null
+
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
@@ -49,10 +51,10 @@ class CameraManager(
     private val analysisExecutor: Executor = Executors.newSingleThreadExecutor()
 
     private var frame = YuvFrame()
-//    private val frameAnalyzer = FrameAnalyzer(
-//        frame = frame,
-//        onFrameAvailable = ::onFrameAvailable
-//    )
+    private val frameAnalyzer = FrameAnalyzer(
+        frame = frame,
+        onFrameAvailable = ::onFrameAvailable
+    )
 
     @RequiresPermission(Manifest.permission.CAMERA)
     fun startCamera(
@@ -82,32 +84,34 @@ class CameraManager(
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
-            imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                // Manually copy YUV planes into frame
-                frame.width = imageProxy.width
-                frame.height = imageProxy.height
+            imageAnalysis.setAnalyzer(analysisExecutor, frameAnalyzer)
 
-                val yPlane = imageProxy.planes[0]
-                val uPlane = imageProxy.planes[1]
-                val vPlane = imageProxy.planes[2]
-
-                frame.yBuffer = yPlane.buffer
-                frame.uBuffer = uPlane.buffer
-                frame.vBuffer = vPlane.buffer
-
-                frame.yRowStride = yPlane.rowStride
-                frame.uRowStride = uPlane.rowStride
-                frame.vRowStride = vPlane.rowStride
-
-                frame.uPixelStride = uPlane.pixelStride
-                frame.vPixelStride = vPlane.pixelStride
-
-                frame.rotationDegrees = imageProxy.imageInfo.rotationDegrees
-
-                onFrameAvailable(frame)
-
-                imageProxy.close()
-            }
+//            imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+//                // Manually copy YUV planes into frame
+//                frame.width = imageProxy.width
+//                frame.height = imageProxy.height
+//
+//                val yPlane = imageProxy.planes[0]
+//                val uPlane = imageProxy.planes[1]
+//                val vPlane = imageProxy.planes[2]
+//
+//                frame.yBuffer = yPlane.buffer
+//                frame.uBuffer = uPlane.buffer
+//                frame.vBuffer = vPlane.buffer
+//
+//                frame.yRowStride = yPlane.rowStride
+//                frame.uRowStride = uPlane.rowStride
+//                frame.vRowStride = vPlane.rowStride
+//
+//                frame.uPixelStride = uPlane.pixelStride
+//                frame.vPixelStride = vPlane.pixelStride
+//
+//                frame.rotationDegrees = imageProxy.imageInfo.rotationDegrees
+//
+//                onFrameAvailable(frame)
+//
+//                imageProxy.close()
+//            }
 
             try {
                 cameraProvider?.unbindAll()
@@ -244,6 +248,8 @@ class CameraManager(
             renderBitmap = Bitmap.createBitmap(frame.width, frame.height,
                 Bitmap.Config.ARGB_8888)
         }
+
+        renderFpsCounter.tick()
 
         argbBuffer.rewind()
         renderBitmap?.copyPixelsFromBuffer(argbBuffer)

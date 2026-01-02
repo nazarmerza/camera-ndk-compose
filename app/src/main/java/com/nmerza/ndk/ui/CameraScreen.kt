@@ -9,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -80,19 +81,19 @@ fun CameraScreen() {
         }
 
         // Toggle
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 20.dp, end = 20.dp),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Show Grayscale", color = Color.White)
-            Switch(
-                checked = showGrayscale.value,
-                onCheckedChange = { showGrayscale.value = it }
-            )
-        }
+//        Row(
+//            modifier = Modifier
+//                .fillMaxWidth()
+//                .padding(top = 20.dp, end = 20.dp),
+//            horizontalArrangement = Arrangement.End,
+//            verticalAlignment = Alignment.CenterVertically
+//        ) {
+//            Text("Show Grayscale", color = Color.White)
+//            Switch(
+//                checked = showGrayscale.value,
+//                onCheckedChange = { showGrayscale.value = it }
+//            )
+//        }
 
         // Mode switcher
         CameraModeSwitcher(currentMode, onModeChange = { if (!isRecording) currentMode = it })
@@ -158,7 +159,6 @@ fun CameraModeSwitcher(currentMode: CameraMode, onModeChange: (CameraMode) -> Un
         }
     }
 }
-
 @Composable
 fun CameraControls(
     currentMode: CameraMode,
@@ -169,46 +169,63 @@ fun CameraControls(
     onThumbnailClick: () -> Unit
 ) {
     Box(
-        modifier = Modifier.fillMaxSize().padding(bottom = 48.dp, start = 32.dp, end = 32.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = 48.dp, start = 32.dp, end = 32.dp),
         contentAlignment = Alignment.BottomCenter
     ) {
-
-        // Gallery Thumbnail (Left)
-        Box(
-
-            modifier = Modifier.align(Alignment.BottomStart).size(60.dp)
-                .clip(RoundedCornerShape(12.dp)).background(Color.DarkGray)
-                .clickable { onThumbnailClick() },
-            contentAlignment = Alignment.Center
+        // Horizontal row for buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            if (lastCapturedUri != null) {
-                AsyncImage(model = lastCapturedUri, contentDescription = null, contentScale = ContentScale.Crop)
-            } else {
-                Icon(Icons.Default.PhotoLibrary, null, tint = Color.White)
+            // Gallery Thumbnail (Left)
+            Box(
+                modifier = Modifier.size(60.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.DarkGray)
+                    .clickable { onThumbnailClick() },
+                contentAlignment = Alignment.Center
+            ) {
+                if (lastCapturedUri != null) {
+                    AsyncImage(
+                        model = lastCapturedUri,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(Icons.Default.PhotoLibrary, null, tint = Color.White)
+                }
             }
-        }
 
-        // Shutter Button (Center)
-        val buttonColor = if (currentMode == CameraMode.VIDEO) Color.Red else Color.White
-        Box(
-            modifier = Modifier.size(80.dp).clip(CircleShape)
-                .background(buttonColor.copy(alpha = 0.5f))
-                .clickable { onCaptureClick() }.padding(4.dp)
-                .clip(CircleShape).background(buttonColor),
-            contentAlignment = Alignment.Center
-        ) {
-            if (isRecording) {
-                // Square icon for "Stop"
-                Box(modifier = Modifier.size(24.dp).background(Color.White, RoundedCornerShape(4.dp)))
+            // Shutter Button (Center)
+            val buttonColor = if (currentMode == CameraMode.VIDEO) Color.Red else Color.White
+            Box(
+                modifier = Modifier.size(80.dp)
+                    .clip(CircleShape)
+                    .background(buttonColor.copy(alpha = 0.5f))
+                    .clickable { onCaptureClick() }
+                    .padding(4.dp)
+                    .clip(CircleShape)
+                    .background(buttonColor),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isRecording) {
+                    Box(
+                        modifier = Modifier.size(24.dp)
+                            .background(Color.White, RoundedCornerShape(4.dp))
+                    )
+                }
             }
-        }
 
-        // Switch Camera (Right)
-        IconButton(
-            onClick = onSwitchCameraClick,
-            modifier = Modifier.align(Alignment.BottomEnd).background(Color.Black.copy(0.3f), CircleShape)
-        ) {
-            Icon(Icons.Default.FlipCameraAndroid, null, tint = Color.White)
+            // Switch Camera (Right)
+            IconButton(
+                onClick = onSwitchCameraClick,
+                modifier = Modifier.background(Color.Black.copy(0.3f), CircleShape)
+            ) {
+                Icon(Icons.Default.FlipCameraAndroid, null, tint = Color.White)
+            }
         }
     }
 }

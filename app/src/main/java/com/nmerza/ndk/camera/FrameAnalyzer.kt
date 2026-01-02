@@ -6,7 +6,7 @@ import androidx.annotation.OptIn
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
-import com.nmerza.ndk.camera.CameraManager.Companion.yuvLayout
+import com.nmerza.ndk.utils.FPSCounter
 
 
 class FrameAnalyzer(
@@ -14,36 +14,47 @@ class FrameAnalyzer(
     private val onFrameAvailable: (YuvFrame) -> Unit
 ) : ImageAnalysis.Analyzer {
 
-    @OptIn(ExperimentalGetImage::class)
-    override fun analyze(image: ImageProxy) {
+    private val fpsCounter = FPSCounter("Analyzer")
 
-        val mediaImage = image.image
+    @OptIn(ExperimentalGetImage::class)
+    override fun analyze(imageProxy: ImageProxy) {
+
+        val mediaImage = imageProxy.image
         if (mediaImage == null) {
-            image.close()
+            imageProxy.close()
             return
         }
 
         try {
-            if (image.format != ImageFormat.YUV_420_888) {
+            if (mediaImage.format != ImageFormat.YUV_420_888) {
                 return
             }
 
-            val planes = image.planes
+// Manually copy YUV planes into frame
+            frame.width = imageProxy.width
+            frame.height = imageProxy.height
 
-            frame.width = image.width
-            frame.height = image.height
-            frame.rotationDegrees = image.imageInfo.rotationDegrees
+            val yPlane = imageProxy.planes[0]
+            val uPlane = imageProxy.planes[1]
+            val vPlane = imageProxy.planes[2]
 
-            frame.yBuffer = planes[0].buffer
-            frame.uBuffer = planes[1].buffer
-            frame.vBuffer = planes[2].buffer
+            frame.yBuffer = yPlane.buffer
+            frame.uBuffer = uPlane.buffer
+            frame.vBuffer = vPlane.buffer
 
-            frame.yRowStride = planes[0].rowStride
-            frame.uRowStride = planes[1].rowStride
-            frame.vRowStride = planes[2].rowStride
+            frame.yRowStride = yPlane.rowStride
+            frame.uRowStride = uPlane.rowStride
+            frame.vRowStride = vPlane.rowStride
 
-            frame.uPixelStride = planes[1].pixelStride
-            frame.vPixelStride = planes[2].pixelStride
+            frame.uPixelStride = uPlane.pixelStride
+            frame.vPixelStride = vPlane.pixelStride
+
+            frame.rotationDegrees = imageProxy.imageInfo.rotationDegrees
+
+            fpsCounter.tick()  // call once per frame
+
+            onFrameAvailable(frame)
+
 
             // IMPORTANT: rewind only, never copy
             frame.yBuffer.rewind()
@@ -51,10 +62,8 @@ class FrameAnalyzer(
             frame.vBuffer.rewind()
 
 
-            onFrameAvailable(frame)
-
         } finally {
-            image.close()
+            imageProxy.close()
         }
     }
 }
