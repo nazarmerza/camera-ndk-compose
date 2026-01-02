@@ -14,10 +14,25 @@ static constexpr int LUT_DIM = 33;
 using LutPtr = const float (*)[LUT_DIM][LUT_DIM][LUT_DIM][3];
 static LutPtr gLut = &BlueArchitecture;
 
-/**
- * Trilinear LUT sampling
- * Input RGB must be normalized [0,1]
- */
+// ---------------- YUV Layout -----------------
+enum class YuvLayout {
+    UNKNOWN = 0,
+    PLANAR = 1,
+    SEMI_PLANAR_NV12 = 2,
+    SEMI_PLANAR_NV21 = 3
+};
+
+static YuvLayout gYuvLayout = YuvLayout::UNKNOWN;
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_nmerza_ndk_camera_NativeProcessor_setYuvLayout(
+        JNIEnv* env, jobject, jint layout) {
+    gYuvLayout = static_cast<YuvLayout>(layout);
+    LOGD("NDK: YUV layout set to %d", layout);
+}
+
+// ---------------- LUT -----------------
 static inline void apply_lut(float r, float g, float b, float out[3]) {
     float rx = r * (LUT_DIM - 1);
     float gx = g * (LUT_DIM - 1);
@@ -48,38 +63,13 @@ static inline void apply_lut(float r, float g, float b, float out[3]) {
     }
 }
 
-/**
- * JNI entry point
- * Writes ARGB_8888 pixels directly into output IntBuffer
- */
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
-        JNIEnv* env,
-        jobject,
-        jobject yBuffer,
-        jobject uBuffer,
-        jobject vBuffer,
-        jint width,
-        jint height,
-        jint yRowStride,
-        jint uRowStride,
-        jint vRowStride,
-        jint uPixelStride,
-        jint vPixelStride,
-        jobject outArgbBuffer
-) {
-    auto* Y = static_cast<uint8_t*>(env->GetDirectBufferAddress(yBuffer));
-    auto* U = static_cast<uint8_t*>(env->GetDirectBufferAddress(uBuffer));
-    auto* V = static_cast<uint8_t*>(env->GetDirectBufferAddress(vBuffer));
-    auto* out = static_cast<uint32_t*>(env->GetDirectBufferAddress(outArgbBuffer));
-
-    if (!Y || !U || !V || !out) {
-        LOGD("Null buffer received");
-        return;
-    }
-
-    float lutRGB[3];
+// ---------------- YUV -> ARGB -----------------
+static void yuvToArgb(
+        const uint8_t* Yp, const uint8_t* Up, const uint8_t* Vp,
+        int width, int height,
+        int yRowStride, int uRowStride, int vRowStride,
+        int uPixelStride, int vPixelStride,
+        uint32_t* out) {
 
     for (int j = 0; j < height; ++j) {
         int yRow = j * yRowStride;
@@ -87,37 +77,75 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
         int uvRowV = (j >> 1) * vRowStride;
 
         for (int i = 0; i < width; ++i) {
-            int yIdx = yRow + i;
-            int uIdx = uvRowU + (i >> 1) * uPixelStride;
-            int vIdx = uvRowV + (i >> 1) * vPixelStride;
+            float Yf = Yp[yRow + i];
+            float Uf=0, Vf=0;
 
-            float Yf = (float)(Y[yIdx] & 0xFF);
-            float Uf = (float)(U[uIdx] & 0xFF);
-            float Vf = (float)(V[vIdx] & 0xFF);
+            switch (gYuvLayout) {
+                case YuvLayout::PLANAR:
+                    Uf = Up[uvRowU + (i >> 1) * uPixelStride];
+                    Vf = Vp[uvRowV + (i >> 1) * vPixelStride];
+                    break;
+
+                case YuvLayout::SEMI_PLANAR_NV12:
+                    Uf = Up[uvRowU + (i & ~1)];
+                    Vf = Up[uvRowU + (i & ~1) + 1];
+                    break;
+
+                case YuvLayout::SEMI_PLANAR_NV21:
+                    Vf = Up[uvRowU + (i & ~1)];
+                    Uf = Up[uvRowU + (i & ~1) + 1];
+                    break;
+
+                default:
+                    Uf = Up[uvRowU + (i >> 1) * uPixelStride];
+                    Vf = Vp[uvRowV + (i >> 1) * vPixelStride];
+            }
 
             float C = Yf - 16.f;
             float D = Uf - 128.f;
             float E = Vf - 128.f;
 
-            float r = (298.f * C + 409.f * E + 128.f) / 256.f;
-            float g = (298.f * C - 100.f * D - 208.f * E + 128.f) / 256.f;
-            float b = (298.f * C + 516.f * D + 128.f) / 256.f;
+            float r = (298.f*C + 409.f*E + 128.f)/256.f;
+            float g = (298.f*C - 100.f*D - 208.f*E + 128.f)/256.f;
+            float b = (298.f*C + 516.f*D + 128.f)/256.f;
 
-            r = CLAMP(r / 255.f, 0.f, 1.f);
-            g = CLAMP(g / 255.f, 0.f, 1.f);
-            b = CLAMP(b / 255.f, 0.f, 1.f);
+            r = CLAMP(r/255.f,0.f,1.f);
+            g = CLAMP(g/255.f,0.f,1.f);
+            b = CLAMP(b/255.f,0.f,1.f);
 
-            apply_lut(r, g, b, lutRGB);
+            float lutRGB[3];
+            apply_lut(r,g,b,lutRGB);
 
-            uint8_t R = (uint8_t)(lutRGB[0] * 255.f);
-            uint8_t G = (uint8_t)(lutRGB[1] * 255.f);
-            uint8_t B = (uint8_t)(lutRGB[2] * 255.f);
+            uint8_t R = (uint8_t)(lutRGB[0]*255.f);
+            uint8_t G = (uint8_t)(lutRGB[1]*255.f);
+            uint8_t B = (uint8_t)(lutRGB[2]*255.f);
 
-            out[j * width + i] =
-                    0xFF000000 |
-                    (R << 16) |
-                    (G << 8)  |
-                    B;
+            out[j*width + i] = 0xFF000000 | (R<<16) | (G<<8) | B;
         }
     }
+}
+
+// ---------------- JNI Entry -----------------
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
+        JNIEnv* env, jobject,
+        jobject yBuffer, jobject uBuffer, jobject vBuffer,
+        jint width, jint height,
+        jint yRowStride, jint uRowStride, jint vRowStride,
+        jint uPixelStride, jint vPixelStride,
+        jobject outArgbBuffer) {
+
+    auto* Y = static_cast<uint8_t*>(env->GetDirectBufferAddress(yBuffer));
+    auto* U = static_cast<uint8_t*>(env->GetDirectBufferAddress(uBuffer));
+    auto* V = static_cast<uint8_t*>(env->GetDirectBufferAddress(vBuffer));
+    auto* out = static_cast<uint32_t*>(env->GetDirectBufferAddress(outArgbBuffer));
+
+    if (!Y || !U || !V || !out) {
+        LOGD("Null buffer");
+        return;
+    }
+
+    yuvToArgb(Y, U, V, width, height, yRowStride, uRowStride, vRowStride,
+              uPixelStride, vPixelStride, out);
 }

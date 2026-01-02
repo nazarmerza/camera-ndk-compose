@@ -6,7 +6,7 @@ import androidx.annotation.OptIn
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
-
+import com.nmerza.ndk.camera.CameraManager.Companion.yuvLayout
 
 
 class FrameAnalyzer(
@@ -49,6 +49,7 @@ class FrameAnalyzer(
             frame.yBuffer.rewind()
             frame.uBuffer.rewind()
             frame.vBuffer.rewind()
+
 
             onFrameAvailable(frame)
 

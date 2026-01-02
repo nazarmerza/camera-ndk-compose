@@ -37,6 +37,9 @@ class CameraManager(
     private val onGrayscaleBitmap: (Bitmap) -> Unit
 ) {
 
+    companion object {
+        var yuvLayout: YuvLayout? = null
+    }
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
@@ -200,6 +203,26 @@ class CameraManager(
     }
 
     private fun onFrameAvailable(frame: YuvFrame) {
+
+        // Detect layout once, and set and pass it to NDK
+        if (yuvLayout == null ) {
+            yuvLayout = when {
+                frame.uPixelStride == 1 && frame.vPixelStride == 1 -> YuvLayout.PLANAR
+                frame.uPixelStride == 2 && frame.vPixelStride == 2 -> {
+                    // distinguish by memory offset or typical device order
+                    if (frame.uBuffer.position() < frame.vBuffer.position())
+                        YuvLayout.SEMI_PLANAR_NV12
+                    else YuvLayout.SEMI_PLANAR_NV21
+                }
+
+                else -> YuvLayout.UNKNOWN
+            }
+
+            yuvLayout?.let { layout ->
+                NativeProcessor.setYuvLayout(layout.value)
+            }
+        }
+
         val argbBuffer = ByteBuffer.allocateDirect(frame.width * frame.height * 4)
             .order(ByteOrder.nativeOrder()).asIntBuffer()
 

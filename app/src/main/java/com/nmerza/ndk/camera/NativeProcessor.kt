@@ -5,11 +5,12 @@ import java.nio.IntBuffer
 
 object NativeProcessor {
 
+
     init {
         // Load the native library
         System.loadLibrary("native-lib")
     }
-
+    external fun setYuvLayout(layout: Int)
     /**
      * Process a single YUV frame in native code.
      *

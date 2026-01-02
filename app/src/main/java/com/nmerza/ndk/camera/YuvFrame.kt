@@ -2,6 +2,10 @@ package com.nmerza.ndk.camera
 
 import java.nio.ByteBuffer
 
+
+
+
+
 /**
  * Holds the YUV planes and metadata for a camera frame.
  * Buffers are non-nullable to ensure safe usage in native processing.
@@ -18,7 +22,9 @@ data class YuvFrame(
     var uPixelStride: Int = 0,
     var vPixelStride: Int = 0,
     var rotationDegrees: Int = 0
+
 ) {
+
 
     /**
      * Populate the YUV planes from ImageProxy planes.
