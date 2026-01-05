@@ -3,6 +3,9 @@ package com.nmerza.ndk.ui
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.view.View
+import android.widget.Toast
+import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
@@ -28,32 +31,32 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.nmerza.ndk.camera.CameraManager
 
 enum class CameraMode { PHOTO, VIDEO }
-
 @Composable
 fun CameraScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val grayscaleBitmap = remember { mutableStateOf<Bitmap?>(null) }
-    val showGrayscale = remember { mutableStateOf(true) }
 
     val cameraManager = remember {
         CameraManager(context) { grayscaleBitmap.value = it }
     }
-    val mainExecutor = remember { ContextCompat.getMainExecutor(context) }
 
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
     var currentMode by remember { mutableStateOf(CameraMode.PHOTO) }
-    var isRecording by remember { mutableStateOf(false) }
     var lastCapturedUri by remember { mutableStateOf<Uri?>(null) }
 
+    // Enabled when processed frame is available
+    val captureEnabled by derivedStateOf { grayscaleBitmap.value != null }
+
     val previewView = remember {
-        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+        PreviewView(context).apply {
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
     }
 
     LaunchedEffect(lensFacing) {
@@ -64,78 +67,93 @@ fun CameraScreen() {
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // Camera preview
-//        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
 
-        // Overlay grayscale bitmap
-        if (showGrayscale.value) {
-            grayscaleBitmap.value?.let { bmp ->
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Grayscale",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillWidth
-                )
-            }
+        // Host the PreviewView so CameraX has an attached surface. We keep the view in the
+        // hierarchy but hide its visual output by setting visibility = INVISIBLE. Using
+        // INVISIBLE (instead of alpha=0) avoids extra alpha compositing overhead.
+        AndroidView(
+            factory = {
+                previewView.apply {
+                    visibility = View.INVISIBLE
+                }
+            },
+            update = { view ->
+                // Optionally show the native preview only until the first processed frame is ready.
+                view.visibility = if (grayscaleBitmap.value == null) View.VISIBLE else View.INVISIBLE
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        grayscaleBitmap.value?.let { bmp ->
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.FillWidth
+            )
         }
 
-        // Toggle
-//        Row(
-//            modifier = Modifier
-//                .fillMaxWidth()
-//                .padding(top = 20.dp, end = 20.dp),
-//            horizontalArrangement = Arrangement.End,
-//            verticalAlignment = Alignment.CenterVertically
-//        ) {
-//            Text("Show Grayscale", color = Color.White)
-//            Switch(
-//                checked = showGrayscale.value,
-//                onCheckedChange = { showGrayscale.value = it }
-//            )
-//        }
+        CameraModeSwitcher(
+            currentMode = currentMode,
+            onModeChange = {
+                if (!cameraManager.isRecording()) {
+                    currentMode = it
+                }
+            }
+        )
 
-        // Mode switcher
-        CameraModeSwitcher(currentMode, onModeChange = { if (!isRecording) currentMode = it })
-
-        // Controls
         CameraControls(
             currentMode = currentMode,
-            isRecording = isRecording,
+            isRecording = cameraManager.isRecording(),
             lastCapturedUri = lastCapturedUri,
-            onCaptureClick = @androidx.annotation.RequiresPermission(android.Manifest.permission.RECORD_AUDIO) {
-                if (currentMode == CameraMode.PHOTO) {
-                    cameraManager.takePhoto(mainExecutor) { lastCapturedUri = it }
-                } else {
-                    if (isRecording) {
-                        cameraManager.stopVideoRecording()
-                        isRecording = false
-                    } else {
-                        isRecording = true
-                        cameraManager.startVideoRecording(mainExecutor) { uri ->
+            captureEnabled = captureEnabled,
+            onCaptureClick = {
+                if (!captureEnabled) return@CameraControls
+                when (currentMode) {
+                    CameraMode.PHOTO -> {
+                        cameraManager.takePhoto { uri ->
+                            Log.d("CameraScreen", "takePhoto callback received uri=$uri")
                             lastCapturedUri = uri
-                            isRecording = false
+                            // inform user
+                            Toast.makeText(context, "Saved: $uri", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    CameraMode.VIDEO -> {
+                        if (cameraManager.isRecording()) {
+                            cameraManager.stopVideoRecording()
+                        } else {
+                            cameraManager.startVideoRecording {
+                                lastCapturedUri = it
+                            }
                         }
                     }
                 }
             },
             onSwitchCameraClick = {
-                lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
-                    CameraSelector.LENS_FACING_FRONT
-                else
-                    CameraSelector.LENS_FACING_BACK
+                lensFacing =
+                    if (lensFacing == CameraSelector.LENS_FACING_BACK)
+                        CameraSelector.LENS_FACING_FRONT
+                    else
+                        CameraSelector.LENS_FACING_BACK
             },
             onThumbnailClick = {
                 lastCapturedUri?.let { uri ->
-                    val intent = Intent(Intent.ACTION_VIEW, uri)
-                        .apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                    Log.d("CameraScreen", "thumbnail click uri=$uri")
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "image/*")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
                     context.startActivity(intent)
                 }
             }
         )
     }
 }
-
 
 
 
@@ -159,11 +177,13 @@ fun CameraModeSwitcher(currentMode: CameraMode, onModeChange: (CameraMode) -> Un
         }
     }
 }
+
 @Composable
 fun CameraControls(
     currentMode: CameraMode,
     isRecording: Boolean,
     lastCapturedUri: Uri?,
+    captureEnabled: Boolean,
     onCaptureClick: () -> Unit,
     onSwitchCameraClick: () -> Unit,
     onThumbnailClick: () -> Unit
@@ -205,10 +225,10 @@ fun CameraControls(
                 modifier = Modifier.size(80.dp)
                     .clip(CircleShape)
                     .background(buttonColor.copy(alpha = 0.5f))
-                    .clickable { onCaptureClick() }
+                    .clickable(enabled = captureEnabled) { onCaptureClick() }
                     .padding(4.dp)
                     .clip(CircleShape)
-                    .background(buttonColor),
+                    .background(buttonColor.copy(alpha = if (captureEnabled) 1f else 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
                 if (isRecording) {

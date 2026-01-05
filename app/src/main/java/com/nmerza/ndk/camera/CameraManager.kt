@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -12,16 +13,8 @@ import androidx.annotation.RequiresPermission
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.MediaStoreOutputOptions
-import androidx.camera.video.Quality
-import androidx.camera.video.QualitySelector
-import androidx.camera.video.Recorder
-import androidx.camera.video.Recording
-import androidx.camera.video.VideoCapture
-import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
@@ -40,15 +33,18 @@ class CameraManager(
 
     private val renderFpsCounter = FPSCounter("Render")
 
-    private  var yuvLayout: YuvLayout? = null
+    private var yuvLayout: YuvLayout? = null
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var activeRecording: Recording? = null
+
+    private var videoEncoder: VideoEncoder? = null
+    private var isRecording = false
+
     private var renderBitmap: Bitmap? = null
 
     private val analysisExecutor: Executor = Executors.newSingleThreadExecutor()
+    private val processingExecutor: Executor = Executors.newSingleThreadExecutor()
 
     private var frame = YuvFrame()
     private val frameAnalyzer = FrameAnalyzer(
@@ -68,50 +64,15 @@ class CameraManager(
 
             val preview = Preview.Builder()
                 .build()
-                .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
+                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
-            imageCapture = ImageCapture.Builder()
-                .build()
-
-            val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
-                .build()
-            videoCapture = VideoCapture.withOutput(recorder)
+            imageCapture = ImageCapture.Builder().build()
 
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
             imageAnalysis.setAnalyzer(analysisExecutor, frameAnalyzer)
-
-//            imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-//                // Manually copy YUV planes into frame
-//                frame.width = imageProxy.width
-//                frame.height = imageProxy.height
-//
-//                val yPlane = imageProxy.planes[0]
-//                val uPlane = imageProxy.planes[1]
-//                val vPlane = imageProxy.planes[2]
-//
-//                frame.yBuffer = yPlane.buffer
-//                frame.uBuffer = uPlane.buffer
-//                frame.vBuffer = vPlane.buffer
-//
-//                frame.yRowStride = yPlane.rowStride
-//                frame.uRowStride = uPlane.rowStride
-//                frame.vRowStride = vPlane.rowStride
-//
-//                frame.uPixelStride = uPlane.pixelStride
-//                frame.vPixelStride = vPlane.pixelStride
-//
-//                frame.rotationDegrees = imageProxy.imageInfo.rotationDegrees
-//
-//                onFrameAvailable(frame)
-//
-//                imageProxy.close()
-//            }
 
             try {
                 cameraProvider?.unbindAll()
@@ -120,8 +81,7 @@ class CameraManager(
                     cameraSelector,
                     preview,
                     imageAnalysis,
-                    imageCapture,
-                    videoCapture
+                    imageCapture
                 )
             } catch (exc: Exception) {
                 exc.printStackTrace()
@@ -129,106 +89,192 @@ class CameraManager(
         }, ContextCompat.getMainExecutor(context))
     }
 
+    fun isRecording(): Boolean = isRecording
+
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    fun startVideoRecording(
-        executor: Executor,
-        onVideoSaved: (Uri) -> Unit
-    ) {
-        val videoCapture = this.videoCapture ?: return
+    fun startVideoRecording(onVideoSaved: (Uri) -> Unit) {
+        if (isRecording || renderBitmap == null) return
 
-        val name = "Video-${System.currentTimeMillis()}"
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/CameraX-Video")
-            }
+        videoEncoder = VideoEncoder(context, renderBitmap!!.width, renderBitmap!!.height) {
+            onVideoSaved(it)
         }
-
-        val mediaStoreOutput = MediaStoreOutputOptions
-            .Builder(context.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-            .setContentValues(contentValues)
-            .build()
-
-        activeRecording = videoCapture.output
-            .prepareRecording(context, mediaStoreOutput)
-            .withAudioEnabled()
-            .start(executor) { event ->
-                if (event is VideoRecordEvent.Finalize) {
-                    if (!event.hasError()) {
-                        onVideoSaved(event.outputResults.outputUri)
-                    } else {
-                        activeRecording?.close()
-                        activeRecording = null
-                    }
-                }
-            }
+        videoEncoder?.start()
+        isRecording = true
     }
 
     fun stopVideoRecording() {
-        activeRecording?.stop()
-        activeRecording = null
+        if (!isRecording) return
+        videoEncoder?.stop()
+        videoEncoder = null
+        isRecording = false
     }
 
-    fun takePhoto(
-        executor: Executor,
-        onImageCaptured: (Uri) -> Unit
-    ) {
-        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
-            .format(System.currentTimeMillis())
+    fun takePhoto(onImageCaptured: (Uri) -> Unit) {
+        Log.d("CameraManager", "takePhoto() called; renderBitmap is ${if (renderBitmap != null) "available" else "null"}")
 
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Image")
+        // Copy the bitmap to avoid concurrent mutation/recycle in the processing thread
+        val bitmapSnapshot = renderBitmap?.let { bmp ->
+            try {
+                Bitmap.createBitmap(bmp)
+            } catch (e: Exception) {
+                Log.e("CameraManager", "Failed to copy renderBitmap", e)
+                null
             }
         }
 
-        val outputOptions = ImageCapture.OutputFileOptions
-            .Builder(context.contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-            .build()
+        if (bitmapSnapshot == null) {
+            Log.w("CameraManager", "takePhoto: no renderBitmap snapshot available, aborting")
+            return
+        }
 
-        imageCapture?.takePicture(
-            outputOptions,
-            executor,
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onError(exc: ImageCaptureException) {
-                    Log.e("CameraManager", "Photo capture failed: ${exc.message}", exc)
+        processingExecutor.execute {
+            var savedUri: Uri = Uri.EMPTY
+            try {
+                val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
+                    .format(System.currentTimeMillis())
+
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                    if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Image")
+                    }
                 }
 
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    val savedUri = output.savedUri ?: Uri.EMPTY
-                    onImageCaptured(savedUri)
-                    Log.d("CameraManager", "Photo capture succeeded: $savedUri")
+                val uri = context.contentResolver.insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    contentValues
+                )
+
+                if (uri != null) {
+                    var wroteOk = false
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        wroteOk = bitmapSnapshot.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                        Log.d("CameraManager", "takePhoto: compress result=$wroteOk for uri=$uri")
+                    } ?: run {
+                        Log.e("CameraManager", "takePhoto: openOutputStream returned null for uri=$uri")
+                    }
+
+                    if (wroteOk) {
+                        savedUri = uri
+
+                        // On older devices, ensure the gallery picks it up immediately
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            try {
+                                val path = uri.path
+                                if (path != null) {
+                                    MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
+                                } else {
+                                    // fallback broadcast
+                                    try {
+                                        val scanIntent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+                                        scanIntent.data = uri
+                                        context.sendBroadcast(scanIntent)
+                                    } catch (e: Exception) {
+                                        Log.w("CameraManager", "Media scan broadcast failed", e)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.w("CameraManager", "MediaScannerConnection failed", e)
+                            }
+                        }
+
+                        Log.d("CameraManager", "takePhoto: saved image to $savedUri")
+                    } else {
+                        Log.e("CameraManager", "takePhoto: failed to write bitmap to uri=$uri")
+                    }
+                } else {
+                    Log.e("CameraManager", "takePhoto: MediaStore insert returned null")
+                    // Fallback: try the legacy insertImage which may work on some devices
+                    try {
+                        val legacy = MediaStore.Images.Media.insertImage(context.contentResolver, bitmapSnapshot, name, "")
+                        if (legacy != null) {
+                            savedUri = Uri.parse(legacy)
+                            Log.d("CameraManager", "takePhoto: fallback insertImage returned $savedUri")
+                        } else {
+                            Log.e("CameraManager", "takePhoto: fallback insertImage returned null")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("CameraManager", "takePhoto: fallback insertImage failed", e)
+                    }
                 }
+
+                // Final fallback: write to app external files directory and scan it so it shows in gallery
+                if (savedUri == Uri.EMPTY) {
+                    try {
+                        val picturesDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES)
+                        if (picturesDir != null) {
+                            val outFile = java.io.File(picturesDir, "$name.jpg")
+                            java.io.FileOutputStream(outFile).use { fos ->
+                                val ok = bitmapSnapshot.compress(Bitmap.CompressFormat.JPEG, 95, fos)
+                                Log.d("CameraManager", "takePhoto: final fallback wrote file=${outFile.absolutePath} ok=$ok")
+                            }
+
+                            // Scan file to add to MediaStore and obtain content Uri in callback
+                            MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), arrayOf("image/jpeg")) { path, scannedUri ->
+                                if (scannedUri != null) {
+                                    savedUri = scannedUri
+                                    Log.d("CameraManager", "takePhoto: scanned file -> $scannedUri")
+
+                                    // Notify UI on main thread
+                                    ContextCompat.getMainExecutor(context).execute {
+                                        onImageCaptured(savedUri)
+                                    }
+                                } else {
+                                    Log.w("CameraManager", "takePhoto: scanFile returned null for path=$path")
+                                }
+                            }
+
+                        } else {
+                            Log.w("CameraManager", "takePhoto: external pictures dir is null")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("CameraManager", "takePhoto: final fallback save failed", e)
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("CameraManager", "Photo capture failed", e)
+            } finally {
+                // Recycle the snapshot copy to free memory
+                try { bitmapSnapshot.recycle() } catch (_: Exception) {}
             }
-        )
+
+            // Only report success back to UI if saving succeeded
+            if (savedUri != Uri.EMPTY) {
+                ContextCompat.getMainExecutor(context).execute {
+                    onImageCaptured(savedUri)
+                }
+            } else {
+                Log.w("CameraManager", "takePhoto: not calling onImageCaptured because save failed")
+            }
+        }
     }
 
     private fun onFrameAvailable(frame: YuvFrame) {
+        processingExecutor.execute {
+            processFrame(frame)
+        }
+    }
 
-        // Detect layout once, and set and pass it to NDK
-        if (yuvLayout == null ) {
+    private fun processFrame(frame: YuvFrame) {
+        // Detect layout once and set to NDK
+        if (yuvLayout == null) {
             yuvLayout = when {
                 frame.uPixelStride == 1 && frame.vPixelStride == 1 -> YuvLayout.PLANAR
                 frame.uPixelStride == 2 && frame.vPixelStride == 2 -> {
-                    // distinguish by memory offset or typical device order
                     if (frame.uBuffer.position() < frame.vBuffer.position())
                         YuvLayout.SEMI_PLANAR_NV12
                     else YuvLayout.SEMI_PLANAR_NV21
                 }
-
                 else -> YuvLayout.UNKNOWN
             }
-
-            yuvLayout?.let { layout ->
-                NativeProcessor.setYuvLayout(layout.value)
-            }
+            yuvLayout?.let { NativeProcessor.setYuvLayout(it.value) }
         }
 
         val argbBuffer = ByteBuffer.allocateDirect(frame.width * frame.height * 4)
-            .order(ByteOrder.nativeOrder()).asIntBuffer()
+            .order(ByteOrder.nativeOrder())
+            .asIntBuffer()
 
         NativeProcessor.processYuvFrame(
             yBuffer = frame.yBuffer,
@@ -245,8 +291,7 @@ class CameraManager(
         )
 
         if (renderBitmap == null || renderBitmap?.width != frame.width || renderBitmap?.height != frame.height) {
-            renderBitmap = Bitmap.createBitmap(frame.width, frame.height,
-                Bitmap.Config.ARGB_8888)
+            renderBitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
         }
 
         renderFpsCounter.tick()
@@ -255,12 +300,17 @@ class CameraManager(
         renderBitmap?.copyPixelsFromBuffer(argbBuffer)
 
         // Rotate bitmap if needed
-        val rotatedBitmap = if (frame.rotationDegrees != 0) {
-            val matrix = android.graphics.Matrix()
-            matrix.postRotate(frame.rotationDegrees.toFloat())
-            Bitmap.createBitmap(renderBitmap!!, 0, 0, renderBitmap!!.width, renderBitmap!!.height, matrix, true)
-        } else renderBitmap
+        if (frame.rotationDegrees != 0) {
+            val matrix = android.graphics.Matrix().apply { postRotate(frame.rotationDegrees.toFloat()) }
+            val rotated = Bitmap.createBitmap(renderBitmap!!, 0, 0, renderBitmap!!.width, renderBitmap!!.height, matrix, true)
+            renderBitmap?.recycle()
+            renderBitmap = rotated
+        }
 
-        onGrayscaleBitmap(rotatedBitmap!!)
+        if (isRecording) {
+            videoEncoder?.encodeFrame(renderBitmap!!)
+        }
+
+        onGrayscaleBitmap(renderBitmap!!)
     }
 }
