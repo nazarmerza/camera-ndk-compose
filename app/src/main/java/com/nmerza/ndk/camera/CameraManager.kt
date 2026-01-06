@@ -103,7 +103,6 @@ class CameraManager(
     }
 
     fun stopVideoRecording() {
-        if (!isRecording) return
         videoEncoder?.stop()
         videoEncoder = null
         isRecording = false
