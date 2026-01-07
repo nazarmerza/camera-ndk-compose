@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
-import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -109,146 +108,42 @@ class CameraManager(
     }
 
     fun takePhoto(onImageCaptured: (Uri) -> Unit) {
-        Log.d("CameraManager", "takePhoto() called; renderBitmap is ${if (renderBitmap != null) "available" else "null"}")
+        // 1. Grab the current bitmap immediately on the calling thread (usually UI)
+        // This makes the capture feel instant.
+        val bitmapToSave = renderBitmap ?: return
+        if (bitmapToSave.isRecycled) return
 
-        // Copy the bitmap to avoid concurrent mutation/recycle in the processing thread
-        val bitmapSnapshot = renderBitmap?.let { bmp ->
-            try {
-                Bitmap.createBitmap(bmp)
-            } catch (e: Exception) {
-                Log.e("CameraManager", "Failed to copy renderBitmap", e)
-                null
+        // 2. Prepare the MediaStore values
+        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US).format(System.currentTimeMillis())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Image")
             }
         }
 
-        if (bitmapSnapshot == null) {
-            Log.w("CameraManager", "takePhoto: no renderBitmap snapshot available, aborting")
-            return
-        }
-
-        processingExecutor.execute {
-            var savedUri: Uri = Uri.EMPTY
-            try {
-                val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
-                    .format(System.currentTimeMillis())
-
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                    if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                        put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Image")
-                    }
+        // 3. Perform the save operation
+        // We do this in a try-block to catch any "recycled bitmap" issues during the save
+        try {
+            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            uri?.let { targetUri ->
+                context.contentResolver.openOutputStream(targetUri)?.use { out ->
+                    // The compress operation is the only part that takes time
+                    bitmapToSave.compress(Bitmap.CompressFormat.JPEG, 95, out)
                 }
 
-                val uri = context.contentResolver.insert(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    contentValues
-                )
+                Log.d("CameraManager", "Photo saved: $targetUri")
 
-                if (uri != null) {
-                    var wroteOk = false
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        wroteOk = bitmapSnapshot.compress(Bitmap.CompressFormat.JPEG, 95, out)
-                        Log.d("CameraManager", "takePhoto: compress result=$wroteOk for uri=$uri")
-                    } ?: run {
-                        Log.e("CameraManager", "takePhoto: openOutputStream returned null for uri=$uri")
-                    }
-
-                    if (wroteOk) {
-                        savedUri = uri
-
-                        // On older devices, ensure the gallery picks it up immediately
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                            try {
-                                val path = uri.path
-                                if (path != null) {
-                                    MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
-                                } else {
-                                    // fallback broadcast
-                                    try {
-                                        val scanIntent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
-                                        scanIntent.data = uri
-                                        context.sendBroadcast(scanIntent)
-                                    } catch (e: Exception) {
-                                        Log.w("CameraManager", "Media scan broadcast failed", e)
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Log.w("CameraManager", "MediaScannerConnection failed", e)
-                            }
-                        }
-
-                        Log.d("CameraManager", "takePhoto: saved image to $savedUri")
-                    } else {
-                        Log.e("CameraManager", "takePhoto: failed to write bitmap to uri=$uri")
-                    }
-                } else {
-                    Log.e("CameraManager", "takePhoto: MediaStore insert returned null")
-                    // Fallback: try the legacy insertImage which may work on some devices
-                    try {
-                        val legacy = MediaStore.Images.Media.insertImage(context.contentResolver, bitmapSnapshot, name, "")
-                        if (legacy != null) {
-                            savedUri = Uri.parse(legacy)
-                            Log.d("CameraManager", "takePhoto: fallback insertImage returned $savedUri")
-                        } else {
-                            Log.e("CameraManager", "takePhoto: fallback insertImage returned null")
-                        }
-                    } catch (e: Exception) {
-                        Log.e("CameraManager", "takePhoto: fallback insertImage failed", e)
-                    }
-                }
-
-                // Final fallback: write to app external files directory and scan it so it shows in gallery
-                if (savedUri == Uri.EMPTY) {
-                    try {
-                        val picturesDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES)
-                        if (picturesDir != null) {
-                            val outFile = java.io.File(picturesDir, "$name.jpg")
-                            java.io.FileOutputStream(outFile).use { fos ->
-                                val ok = bitmapSnapshot.compress(Bitmap.CompressFormat.JPEG, 95, fos)
-                                Log.d("CameraManager", "takePhoto: final fallback wrote file=${outFile.absolutePath} ok=$ok")
-                            }
-
-                            // Scan file to add to MediaStore and obtain content Uri in callback
-                            MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), arrayOf("image/jpeg")) { path, scannedUri ->
-                                if (scannedUri != null) {
-                                    savedUri = scannedUri
-                                    Log.d("CameraManager", "takePhoto: scanned file -> $scannedUri")
-
-                                    // Notify UI on main thread
-                                    ContextCompat.getMainExecutor(context).execute {
-                                        onImageCaptured(savedUri)
-                                    }
-                                } else {
-                                    Log.w("CameraManager", "takePhoto: scanFile returned null for path=$path")
-                                }
-                            }
-
-                        } else {
-                            Log.w("CameraManager", "takePhoto: external pictures dir is null")
-                        }
-                    } catch (e: Exception) {
-                        Log.e("CameraManager", "takePhoto: final fallback save failed", e)
-                    }
-                }
-
-            } catch (e: Exception) {
-                Log.e("CameraManager", "Photo capture failed", e)
-            } finally {
-                // Recycle the snapshot copy to free memory
-                try { bitmapSnapshot.recycle() } catch (_: Exception) {}
+                // 4. Return the result to the UI
+                onImageCaptured(targetUri)
             }
-
-            // Only report success back to UI if saving succeeded
-            if (savedUri != Uri.EMPTY) {
-                ContextCompat.getMainExecutor(context).execute {
-                    onImageCaptured(savedUri)
-                }
-            } else {
-                Log.w("CameraManager", "takePhoto: not calling onImageCaptured because save failed")
-            }
+        } catch (e: Exception) {
+            Log.e("CameraManager", "Failed to save photo", e)
         }
     }
+
+
 
     private fun onFrameAvailable(frame: YuvFrame) {
         processingExecutor.execute {
