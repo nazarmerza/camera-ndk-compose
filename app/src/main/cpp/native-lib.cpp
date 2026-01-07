@@ -3,19 +3,37 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <string>
 
 #define LOG_TAG "native-lib"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define CLAMP(x,a,b) std::fmax(a, std::fmin(b,(x)))
 
+// --- FILTER HEADERS ---
 #include "filters/BlueArchitecture.hpp"
+#include "filters/HardBoost.hpp"
+#include "filters/LongBeachMorning.hpp"
+#include "filters/LushGreen.hpp"
+#include "filters/MagicHour.hpp"
+#include "filters/NaturalBoost.hpp"
+#include "filters/OrangeAndBlue.hpp"
+#include "filters/SoftBlackAndWhite.hpp"
+#include "filters/Waves.hpp"
+#include "filters/BlueHour.hpp"
+#include "filters/ColdChrome.hpp"
+#include "filters/CrispAutumn.hpp"
+#include "filters/DarkAndSomber.hpp"
 
 //-----------------------------
 // LUT setup
 //-----------------------------
 static constexpr int LUT_DIM = 33;
 using LutPtr = const float (*)[33][33][33][3];
-static LutPtr gLut = &BlueArchitecture;
+
+// Global state for current filter
+static LutPtr gLut = nullptr; // nullptr means "None" / Bypass
+static std::map<std::string, LutPtr> gFilterMap;
 
 //-----------------------------
 // YUV Layout
@@ -28,12 +46,61 @@ enum class YuvLayout {
 };
 
 static YuvLayout gYuvLayout = YuvLayout::UNKNOWN;
-
-// Optional: swap U/V in planar mode (for emulator quirk)
 static bool gPlanarUVSwapped = false;
 
 //-----------------------------
-// JNI entry: set YUV layout
+// Filter Map Initialization
+//-----------------------------
+void initialize_filter_map() {
+    gFilterMap["None"] = nullptr;
+    gFilterMap["Blue Architecture"] = &BlueArchitecture;
+    gFilterMap["HardBoost"] = &HardBoost;
+    gFilterMap["LongBeachMorning"] = &LongBeachMorning;
+    gFilterMap["LushGreen"] = &LushGreen;
+    gFilterMap["MagicHour"] = &MagicHour;
+    gFilterMap["NaturalBoost"] = &NaturalBoost;
+    gFilterMap["OrangeAndBlue"] = &OrangeAndBlue;
+    gFilterMap["SoftBlackAndWhite"] = &SoftBlackAndWhite;
+    gFilterMap["Waves"] = &Waves;
+    gFilterMap["BlueHour"] = &BlueHour;
+    gFilterMap["ColdChrome"] = &ColdChrome;
+    gFilterMap["CrispAutumn"] = &CrispAutumn;
+    gFilterMap["DarkAndSomber"] = &DarkAndSomber;
+
+    // Set default filter
+    gLut = gFilterMap["None"];
+    LOGD("Filter map initialized with %zu filters", gFilterMap.size());
+}
+
+// Automatically called when library is loaded
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    initialize_filter_map();
+    return JNI_VERSION_1_6;
+}
+
+//-----------------------------
+// JNI: Set Active Filter
+//-----------------------------
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_nmerza_ndk_camera_NativeProcessor_setActiveFilter(JNIEnv *env, jobject thiz,
+                                                           jstring filter_name) {
+    const char *nativeString = env->GetStringUTFChars(filter_name, nullptr);
+    std::string name(nativeString);
+
+    auto it = gFilterMap.find(name);
+    if (it != gFilterMap.end()) {
+        gLut = it->second;
+        LOGD("Filter changed to: %s", nativeString);
+    } else {
+        LOGD("Filter name not found: %s", nativeString);
+    }
+
+    env->ReleaseStringUTFChars(filter_name, nativeString);
+}
+
+//-----------------------------
+// JNI: set YUV layout
 //-----------------------------
 extern "C"
 JNIEXPORT void JNICALL
@@ -46,13 +113,18 @@ Java_com_nmerza_ndk_camera_NativeProcessor_setYuvLayout(
         case 3: gYuvLayout = YuvLayout::SEMI_PLANAR_NV21; break;
         default: gYuvLayout = YuvLayout::UNKNOWN;
     }
-    gPlanarUVSwapped = false; // reset swap flag
 }
 
 //-----------------------------
 // Trilinear LUT sampling
 //-----------------------------
 static inline void apply_lut(float r, float g, float b, float out[3]) {
+    // If gLut is nullptr (None), bypass filtering
+    if (!gLut) {
+        out[0] = r; out[1] = g; out[2] = b;
+        return;
+    }
+
     float rx = r * (LUT_DIM - 1);
     float gx = g * (LUT_DIM - 1);
     float bx = b * (LUT_DIM - 1);
@@ -83,7 +155,7 @@ static inline void apply_lut(float r, float g, float b, float out[3]) {
 }
 
 //-----------------------------
-// YUV -> ARGB conversion
+// YUV -> ARGB conversion (Main Processing Loop)
 //-----------------------------
 extern "C"
 JNIEXPORT void JNICALL
@@ -107,10 +179,7 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
     auto* V = static_cast<uint8_t*>(env->GetDirectBufferAddress(vBuffer));
     auto* out = static_cast<uint32_t*>(env->GetDirectBufferAddress(outArgbBuffer));
 
-    if (!Y || !U || !V || !out) {
-        LOGD("Null buffer received");
-        return;
-    }
+    if (!Y || !U || !V || !out) return;
 
     float lutRGB[3];
 
@@ -142,12 +211,10 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
                     int vIdx = uvRowV + (i >> 1) * vPixelStride;
                     Uf = static_cast<float>(U[uIdx] & 0xFF);
                     Vf = static_cast<float>(V[vIdx] & 0xFF);
-
-                    // Swap U/V for emulator quirk if needed
                     if (gPlanarUVSwapped) std::swap(Uf, Vf);
                     break;
                 }
-                default: { // fallback NV21
+                default: {
                     int uvIdx = uvRowV + (i & ~1);
                     Vf = static_cast<float>(V[uvIdx] & 0xFF);
                     Uf = static_cast<float>(V[uvIdx + 1] & 0xFF);
@@ -155,7 +222,6 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
                 }
             }
 
-            // YUV -> RGB
             float C = Yf - 16.f;
             float D = Uf - 128.f;
             float E = Vf - 128.f;
@@ -168,6 +234,7 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
             g = CLAMP(g / 255.f, 0.f, 1.f);
             b = CLAMP(b / 255.f, 0.f, 1.f);
 
+            // Now applies whatever is in gLut (or bypasses if None)
             apply_lut(r, g, b, lutRGB);
 
             uint8_t R = static_cast<uint8_t>(lutRGB[0]*255.f);
@@ -177,11 +244,4 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
             out[j*width + i] = 0xFF000000 | (B<<16) | (G<<8) | R;
         }
     }
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_nmerza_ndk_camera_NativeProcessor_setActiveFilter(JNIEnv *env, jobject thiz,
-                                                           jstring filter_name) {
-    // TODO: implement setActiveFilter()
 }
