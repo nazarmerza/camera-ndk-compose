@@ -178,3 +178,10 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
         }
     }
 }
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_nmerza_ndk_camera_NativeProcessor_setActiveFilter(JNIEnv *env, jobject thiz,
+                                                           jstring filter_name) {
+    // TODO: implement setActiveFilter()
+}

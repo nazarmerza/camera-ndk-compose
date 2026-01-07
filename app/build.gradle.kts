@@ -56,6 +56,10 @@ android {
 
 dependencies {
 
+
+    implementation("io.coil-kt:coil-video:2.6.0") // <-- ADD THIS LINE
+
+
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
     val cameraxVersion = "1.5.1"
     implementation("androidx.camera:camera-core:$cameraxVersion")

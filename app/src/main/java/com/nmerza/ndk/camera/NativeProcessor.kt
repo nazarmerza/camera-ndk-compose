@@ -10,6 +10,8 @@ object NativeProcessor {
         // Load the native library
         System.loadLibrary("native-lib")
     }
+
+    external fun setActiveFilter(filterName: String)
     external fun setYuvLayout(layout: Int)
     /**
      * Process a single YUV frame in native code.

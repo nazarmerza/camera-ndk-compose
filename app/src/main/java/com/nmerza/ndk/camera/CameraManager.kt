@@ -15,6 +15,7 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.runtime.Stable
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.nmerza.ndk.utils.FPSCounter
@@ -25,6 +26,7 @@ import java.util.Locale
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
+@Stable
 class CameraManager(
     private val context: Context,
     private val onGrayscaleBitmap: (Bitmap) -> Unit
