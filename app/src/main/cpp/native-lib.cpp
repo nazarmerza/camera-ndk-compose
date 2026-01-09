@@ -83,7 +83,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 //-----------------------------
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_nmerza_ndk_camera_NativeProcessor_setActiveFilter(JNIEnv *env, jobject thiz,
+Java_com_nmerza_spectracam_camera_NativeProcessor_setActiveFilter(JNIEnv *env, jobject thiz,
                                                            jstring filter_name) {
     const char *nativeString = env->GetStringUTFChars(filter_name, nullptr);
     std::string name(nativeString);
@@ -104,7 +104,7 @@ Java_com_nmerza_ndk_camera_NativeProcessor_setActiveFilter(JNIEnv *env, jobject 
 //-----------------------------
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_nmerza_ndk_camera_NativeProcessor_setYuvLayout(
+Java_com_nmerza_spectracam_camera_NativeProcessor_setYuvLayout(
         JNIEnv*, jobject thiz, jint layout
 ) {
     switch(layout) {
@@ -125,32 +125,54 @@ static inline void apply_lut(float r, float g, float b, float out[3]) {
         return;
     }
 
+    // Calculate floating point indices
     float rx = r * (LUT_DIM - 1);
     float gx = g * (LUT_DIM - 1);
     float bx = b * (LUT_DIM - 1);
 
-    int x = (int)rx;
-    int y = (int)gx;
-    int z = (int)bx;
+    // Get integer indices and fractional parts
+    int x0 = (int)rx;
+    int y0 = (int)gx;
+    int z0 = (int)bx;
 
-    float dx = rx - x;
-    float dy = gx - y;
-    float dz = bx - z;
+    float dx = rx - x0;
+    float dy = gx - y0;
+    float dz = bx - z0;
 
-    int x1 = std::min(x + 1, LUT_DIM - 1);
-    int y1 = std::min(y + 1, LUT_DIM - 1);
-    int z1 = std::min(z + 1, LUT_DIM - 1);
+    // Clamp indices to LUT bounds
+    int x1 = std::min(x0 + 1, LUT_DIM - 1);
+    int y1 = std::min(y0 + 1, LUT_DIM - 1);
+    int z1 = std::min(z0 + 1, LUT_DIM - 1);
 
+    // Pre-calculate weights for interpolation
+    float w_dx0 = 1.0f - dx;
+    float w_dy0 = 1.0f - dy;
+    float w_dz0 = 1.0f - dz;
+
+    // Get pointers to the 8 corner vertices in the LUT for faster access
+    const float* v000 = (*gLut)[z0][y0][x0];
+    const float* v001 = (*gLut)[z0][y0][x1];
+    const float* v010 = (*gLut)[z0][y1][x0];
+    const float* v011 = (*gLut)[z0][y1][x1];
+    const float* v100 = (*gLut)[z1][y0][x0];
+    const float* v101 = (*gLut)[z1][y0][x1];
+    const float* v110 = (*gLut)[z1][y1][x0];
+    const float* v111 = (*gLut)[z1][y1][x1];
+
+    // Perform trilinear interpolation for each color component
     for (int c = 0; c < 3; ++c) {
-        float c00 = (*gLut)[z ][y ][x ][c] * (1 - dx) + (*gLut)[z ][y ][x1][c] * dx;
-        float c10 = (*gLut)[z ][y1][x ][c] * (1 - dx) + (*gLut)[z ][y1][x1][c] * dx;
-        float c01 = (*gLut)[z1][y ][x ][c] * (1 - dx) + (*gLut)[z1][y ][x1][c] * dx;
-        float c11 = (*gLut)[z1][y1][x ][c] * (1 - dx) + (*gLut)[z1][y1][x1][c] * dx;
+        // Interpolate along x-axis
+        float c00 = v000[c] * w_dx0 + v001[c] * dx; // at y0, z0
+        float c10 = v010[c] * w_dx0 + v011[c] * dx; // at y1, z0
+        float c01 = v100[c] * w_dx0 + v101[c] * dx; // at y0, z1
+        float c11 = v110[c] * w_dx0 + v111[c] * dx; // at y1, z1
 
-        float c0 = c00 * (1 - dy) + c10 * dy;
-        float c1 = c01 * (1 - dy) + c11 * dy;
+        // Interpolate along y-axis
+        float c0 = c00 * w_dy0 + c10 * dy;
+        float c1 = c01 * w_dy0 + c11 * dy;
 
-        out[c] = CLAMP(c0 * (1 - dz) + c1 * dz, 0.f, 1.f);
+        // Interpolate along z-axis and clamp the final value
+        out[c] = CLAMP(c0 * w_dz0 + c1 * dz, 0.f, 1.f);
     }
 }
 
@@ -159,7 +181,7 @@ static inline void apply_lut(float r, float g, float b, float out[3]) {
 //-----------------------------
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
+Java_com_nmerza_spectracam_camera_NativeProcessor_processYuvFrame(
         JNIEnv* env,
         jobject,
         jobject yBuffer,
@@ -245,3 +267,4 @@ Java_com_nmerza_ndk_camera_NativeProcessor_processYuvFrame(
         }
     }
 }
+

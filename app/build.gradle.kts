@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "com.nmerza.ndk"
+    namespace = "com.nmerza.spectracam"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.nmerza.ndk"
+        applicationId = "com.nmerza.spectracam"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
@@ -56,20 +56,18 @@ android {
 
 dependencies {
 
-
-    implementation("io.coil-kt:coil-video:2.6.0") // <-- ADD THIS LINE
-
+    implementation("io.coil-kt:coil-video:2.6.0")
 
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
     val cameraxVersion = "1.5.1"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
-    implementation("androidx.camera:camera-view:$cameraxVersion") // for PreviewView
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
-        implementation("io.coil-kt:coil-compose:2.6.0") // Or the latest version
-
+    implementation("androidx.camera:camera-view:$cameraxVersion")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
